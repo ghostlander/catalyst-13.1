@@ -88,44 +88,42 @@ struct drm_proc_list {
  * "/proc/ati/%minor%/%name%".
  */
 struct proc_dir_entry *DRM(proc_init)(drm_device_t *dev, int minor,
-				      struct proc_dir_entry *root,
-				      struct proc_dir_entry **dev_root)
-{
-	struct proc_dir_entry *ent;
-	int		      i, j;
-	char                  name[64];
+  struct proc_dir_entry *root, struct proc_dir_entry **dev_root) {
+    struct proc_dir_entry *ent;
+    int i, j;
+    char name[64];
 
-	if (!minor) root = create_proc_entry("dri", S_IFDIR, NULL);
-	if (!root) {
-		DRM_ERROR("Cannot create /proc/ati\n");
-		return NULL;
-	}
+    if(!minor)
+      root = KCL_create_proc_dir(NULL, "dri", S_IRUGO|S_IXUGO);
+    if(!root) {
+        DRM_ERROR("Cannot create /proc/ati\n");
+        return(NULL);
+    }
 
-	sprintf(name, "%d", minor);
-	*dev_root = create_proc_entry(name, S_IFDIR, root);
-	if (!*dev_root) {
-		DRM_ERROR("Cannot create /proc/ati/%s\n", name);
-		return NULL;
-	}
+    sprintf(name, "%d", minor);
+    *dev_root = KCL_create_proc_dir(root, name, S_IRUGO|S_IXUGO);
+    if(!*dev_root) {
+        DRM_ERROR("Cannot create /proc/ati/%s\n", name);
+        return(NULL);
+    }
 
-	for (i = 0; i < DRM_PROC_ENTRIES; i++) {
-		ent = create_proc_entry(DRM(proc_list)[i].name,
-					S_IFREG|S_IRUGO, *dev_root);
-		if (!ent) {
-			DRM_ERROR("Cannot create /proc/ati/%s/%s\n",
-				  name, DRM(proc_list)[i].name);
-			for (j = 0; j < i; j++)
-				remove_proc_entry(DRM(proc_list)[i].name,
-						  *dev_root);
-			remove_proc_entry(name, root);
-			if (!minor) remove_proc_entry("dri", NULL);
-			return NULL;
-		}
-		ent->read_proc = DRM(proc_list)[i].f;
-		ent->data      = dev;
-	}
+    for(i = 0; i < DRM_PROC_ENTRIES; i++) {
+        ent = KCL_create_proc_entry(*dev_root, DRM(proc_list)[i].name, S_IFREG|S_IRUGO,
+          (kcl_file_operations_t*)&firegl_fops, DRM(proc_list)[i].f, NULL, dev);
+        if(!ent) {
+            DRM_ERROR("Cannot create /proc/ati/%s/%s\n",
+              name, DRM(proc_list)[i].name);
+            for(j = 0; j < i; j++) {
+                KCL_remove_proc_dir_entry(*dev_root, DRM(proc_list)[i].name);
+                KCL_remove_proc_dir_entry(NULL, "dri");
+                if(!minor)
+                  KCL_remove_proc_dir_entry(NULL, "dri");
+                return(NULL);
+            }
+        }
+    }
 
-	return root;
+    return(root);
 }
 
 
@@ -140,20 +138,24 @@ struct proc_dir_entry *DRM(proc_init)(drm_device_t *dev, int minor,
  * Remove all proc entries created by proc_init().
  */
 int DRM(proc_cleanup)(int minor, struct proc_dir_entry *root,
-		      struct proc_dir_entry *dev_root)
-{
-	int  i;
-	char name[64];
+  struct proc_dir_entry *dev_root) {
+    int  i;
+    char name[64];
 
-	if (!root || !dev_root) return 0;
+    if(!root || !dev_root)
+      return(0);
 
-	for (i = 0; i < DRM_PROC_ENTRIES; i++)
-		remove_proc_entry(DRM(proc_list)[i].name, dev_root);
-	sprintf(name, "%d", minor);
-	remove_proc_entry(name, root);
-	if (!minor) remove_proc_entry("dri", NULL);
 
-	return 0;
+    for (i = 0; i < DRM_PROC_ENTRIES; i++) {
+        KCL_remove_proc_dir_entry(dev_root, DRM(proc_list)[i].name);
+    }
+
+    sprintf(name, "%d", minor);
+    KCL_remove_proc_dir_entry(root, name);
+    if(!minor)
+      KCL_remove_proc_dir_entry(NULL, "dri");
+
+    return(0);
 }
 
 /**

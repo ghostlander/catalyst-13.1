@@ -202,11 +202,23 @@ cd $current_wd
 # verify match with respective line in linux/version.h
 # sample: #define UTS_RELEASE "2.4.0-test7"
 
-src_file=$linuxincludes/linux/version.h
+# Before kernel 3.7.0 version.h is normally located at linux/version.h
+# For 3.7.0 and later version.h is in generated/uapi/linux/version.h
 
-if [ ! -e $src_file ]; then
+headerexist=0
+
+for src_file in \
+  "$linuxincludes/linux/version.h" \
+  "$linuxincludes/generated/uapi/linux/version.h";
+do
+if [ -e $src_file ]; then
+  headerexist=1
+  break  
+fi
+done
+
+if [ $headerexist -eq 0 ]; then
   echo "kernel includes at $linuxincludes not found or incomplete" | tee -a $logfile
-  echo "file: $src_file"                                           | tee -a $logfile
   exit 1
 fi
 

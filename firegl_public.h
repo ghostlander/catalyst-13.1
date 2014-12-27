@@ -17,10 +17,13 @@
 #ifndef _FIREGL_PUBLIC_H_
 #define _FIREGL_PUBLIC_H_
 
+#ifndef ESX 
 #include <stdarg.h>
+#include "kcl_iommu.h"
+#endif /*ifndef ESX*/ 
+
 #include "kcl_pci.h"
 #include "kcl_io.h"
-#include "kcl_iommu.h"
 
 #define FIREGL_USWC_SUPPORT     1
 
@@ -30,6 +33,7 @@
 #define LITTLEENDIAN_CPU 1
 #endif
 
+#ifndef ESX 
 #if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,9)
 
 #define REMAP_PAGE_RANGE_FN remap_pfn_range
@@ -192,9 +196,9 @@ do { \
 
 struct vm_area_struct;
 struct semaphore;
+struct rw_semaphore;
 struct drm_device;
 struct firegl_pcie_mem;
-
 
 // note: assigning uniqe types to originally non interchangeable types
 typedef struct { int uniqe7; } kcl_file_operations_t;
@@ -202,18 +206,25 @@ typedef struct { int uniqe7; } kcl_file_operations_t;
 typedef	int (*kcl_read_proc_t)(
     char* page, char** start, kcl_off_t off, int count, int* eof, void* data);
 
+typedef int (*kcl_write_proc_t)(
+    void* file, const char *buffer, unsigned long count, void *data);
+
 typedef struct {
     const char*             name;
-    kcl_read_proc_t        f;
-    kcl_file_operations_t* fops;
+    kcl_read_proc_t         rp;
+    kcl_write_proc_t        wp;
+    kcl_file_operations_t*  fops;
 } kcl_proc_list_t;
 
 extern kcl_proc_list_t KCL_PROC_FileList[];
+#endif /*ifndef ESX*/
 
 typedef struct {
     unsigned long           signature;
     int                     privdevcount; // number of privdev structs
+#ifndef ESX
     kcl_proc_list_t *      proclist;
+#endif
     const char *            name;
     unsigned int	        major_version;
     unsigned int	        minor_version;
@@ -221,6 +232,15 @@ typedef struct {
     const char *	        date;
     void *                  privglobal; // private global context
 } kcl_device_t;
+
+/* console mode info */
+typedef struct {
+    unsigned int mode_width;   /*the width of the framebuffer*/
+    unsigned int mode_height;  /*the height of the framebuffer*/
+    unsigned int depth;        /*the depth of the framebuffer*/
+    unsigned int pitch;        /*the pitch of the framebuffer*/
+    unsigned long fb_base;     /*the base address of the framebuffer*/
+} kcl_console_mode_info_t;
 
 /*****************************************************************************/
 
@@ -245,7 +265,15 @@ typedef struct {
  */
 typedef int             KCL_TYPE_Pid;       /** Process identifier */
 typedef int             KCL_TYPE_Tgid;      /** Thread Group identifier */
+#ifdef CONFIG_UIDGID_STRICT_TYPE_CHECKS
 typedef int             KCL_TYPE_Uid;       /** User identifier */
+#else
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3,12,0)
+typedef int             KCL_TYPE_Uid;       /** User identifier */
+#else
+typedef kuid_t          KCL_TYPE_Uid;       /** User identifier */
+#endif
+#endif
 
 /** Atomic variables
  * This type is defined using struct to make sure compiled code will
@@ -254,7 +282,9 @@ typedef int             KCL_TYPE_Uid;       /** User identifier */
  * Since atomic variables are intended for using in the concurrent
  * environment, volatile is used
  */
+#ifndef ESX
 typedef struct { volatile unsigned int counter; } KCL_TYPE_Atomic;
+#endif
 
 /** OS independent constant definitions */
 
@@ -265,16 +295,21 @@ typedef enum
     KCL_ERROR_PERMISSION_DENIED,
     KCL_ERROR_INVALID_ADDRESS,
     KCL_ERROR_INPUT_OUTPUT,
+#ifndef ESX
     KCL_ERROR_INVALID_SLOT,
+#endif /*ifndef ESX*/
     KCL_ERROR_OUT_OF_MEMORY,
     KCL_ERROR_OPERATION_NOT_PERMITTED,
     KCL_ERROR_DEVICE_NOT_EXIST,
     KCL_ERROR_INTERRUPTED_SYSTEM_CALL,
     KCL_ERROR_SIGNAL_INTERRUPTED_SYSTEM_CALL,
+#ifndef ESX
     KCL_ERROR_CORRUPTED_SHARED_LIB,
+#endif /*ifndef ESX*/
     KCL_ERROR_NUM
 } KCL_ENUM_ErrorCode;
 
+#ifndef ESX
 typedef enum
 {
     KCL_PROCESS_STATE_READY_TO_RUN,
@@ -304,9 +339,11 @@ typedef struct {
 	unsigned long freehigh;		// Available high memory size 
 	unsigned int mem_unit;		// Memory unit size in bytes 
 }KCL_SYS_MEM_INFO;
+#endif /*ifndef ESX*/
 
+
+#ifndef ESX 
 /** KCL function declarations */
-
 extern void          ATI_API_CALL KCL_GlobalKernelScheduler(void);
 extern int           ATI_API_CALL KCL_GetSignalStatus(void);
 extern unsigned int  ATI_API_CALL KCL_CurrentProcessIsTerminating(void);
@@ -356,19 +393,23 @@ extern int           ATI_API_CALL KCL_AtomicTestAndToggleBit(int nr, volatile vo
 extern int           ATI_API_CALL KCL_PosixSecurityCapCheck(KCL_ENUM_PosixSecurityCap cap);
 
 /*****************************************************************************/
-
-extern int ATI_API_CALL drm_name_info(char* buf, char** start, kcl_off_t offset, int len, int* eof, void* data);
-extern int ATI_API_CALL firegl_bios_version(char* buf, char** start, kcl_off_t offset, int len, int* eof, void* data);
-extern int ATI_API_CALL firegl_interrupt_info(char* buf, char** start, kcl_off_t offset, int len, int* eof, void* data);
-extern int ATI_API_CALL drm_mem_info(char* buf, char** start, kcl_off_t offset, int len, int *eof, void *data);
-extern int ATI_API_CALL drm_mem_info1(char* buf, char** start, kcl_off_t offset, int len, int *eof, void *data);
-extern int ATI_API_CALL drm_vm_info(char* buf, char** start, kcl_off_t offset, int len, int* eof, void* data);
-extern int ATI_API_CALL drm_clients_info(char* buf, char** start, kcl_off_t offset, int len, int* eof, void* data);
-extern int ATI_API_CALL firegl_lock_info(char* buf, char** start, kcl_off_t offset, int len, int* eof, void* data);
-extern int ATI_API_CALL firegl_ptm_info(char* buf, char** start, kcl_off_t offset, int len, int *eof, void *data);
+extern int ATI_API_CALL drm_name_info(char* buf, int request, void* data);
+extern int ATI_API_CALL firegl_bios_version(char* buf, int request, void* data);
+extern int ATI_API_CALL firegl_interrupt_info(char* buf, int request, void* data);
+extern int ATI_API_CALL drm_mem_info(char* buf, int request, void *data);
+extern int ATI_API_CALL drm_mem_info1(char* buf, int request, void *data);
+extern int ATI_API_CALL drm_vm_info(char* buf, int request, void* data);
+extern int ATI_API_CALL drm_clients_info(char* buf, int request, void* data);
+extern int ATI_API_CALL firegl_lock_info(char* buf, int request, void* data);
+extern int ATI_API_CALL firegl_ptm_info(char* buf, int request, void *data);
 #ifdef DEBUG
-extern int ATI_API_CALL drm_bq_info(char* buf, char** start, kcl_off_t offset, int len, int* eof, void* data);
+extern int ATI_API_CALL drm_bq_info(char* buf, int request, void* data);
 #endif
+extern int ATI_API_CALL firegl_debug_proc_read(char* buf, int request, void* data);
+
+extern int ATI_API_CALL firegl_debug_proc_write(void* file, const char *buffer,
+  unsigned long count, void *data);
+
 extern int ATI_API_CALL firegl_interrupt_open(void* data, KCL_IO_FILE_Handle file);
 extern int ATI_API_CALL firegl_interrupt_release(KCL_IO_FILE_Handle file);
 extern unsigned int ATI_API_CALL firegl_interrupt_read(
@@ -383,9 +424,6 @@ extern int ATI_API_CALL firegl_interrupt_write(
                                     const char *user_buf, 
                                     kcl_size_t user_buf_size, 
                                     kcl_loff_t *user_file_pos);
-
-extern int ATI_API_CALL firegl_debug_proc_read(char* buf, char** start, kcl_off_t offset, int len, int* eof, void* data);
-extern int ATI_API_CALL firegl_debug_proc_write(void* file, const char *buffer, unsigned long count, void *data); 
 
 /*****************************************************************************/
 
@@ -450,6 +488,20 @@ extern int ATI_API_CALL KCL_SEMAPHORE_DownInterruptible(struct semaphore* sem);
 
 extern void ATI_API_CALL KCL_SPINLOCK_STATIC_Grab(kcl_device_t *dev, int ndx);
 extern void ATI_API_CALL KCL_SPINLOCK_STATIC_Release(kcl_device_t *dev, int ndx);
+//rw semaphore for GPU reset
+extern void ATI_API_CALL KCL_RW_SEMAPHORE_DownWrite(struct rw_semaphore* sem);
+
+extern void ATI_API_CALL KCL_RW_SEMAPHORE_UpWrite(struct rw_semaphore* sem);
+
+extern void ATI_API_CALL KCL_RW_SEMAPHORE_DownRead(struct rw_semaphore* sem);
+
+extern void ATI_API_CALL KCL_RW_SEMAPHORE_UpRead(struct rw_semaphore* sem);
+
+extern void ATI_API_CALL KCL_RW_SEMAPHORE_Init(struct rw_semaphore* sem);
+
+extern kcl_size_t ATI_API_CALL KCL_RW_SEMAPHORE_GetObjSize(void);
+
+
 #ifdef VCE_SUPPORT
 #define __KE_MAX_SPINLOCKS 9
 #else
@@ -496,6 +548,9 @@ extern void* ATI_API_CALL KCL_MEM_MapPageListWc(unsigned long *pagelist, unsigne
 extern void ATI_API_CALL KCL_MEM_Unmap(void* addr);
 extern unsigned long ATI_API_CALL KCL_GetInitKerPte(unsigned long address);
 
+//UEFI call
+extern void ATI_API_CALL KCL_Get_Console_Mode(kcl_console_mode_info_t *console_mode);
+extern int ATI_API_CALL KCL_EFI_IS_ENABLED(void);
 
 /*****************************************************************************/
 
@@ -568,7 +623,6 @@ extern void ATI_API_CALL firegl_pm_lock_highmem_gart(struct drm_device* dev, int
 /*****************************************************************************/
 
 extern int ATI_API_CALL KCL_PM_Is_SuspendToRam(int state);
-
 /*****************************************************************************/
 
 /* global constants */
@@ -619,7 +673,7 @@ extern unsigned long        KCL_SYSINFO_TimerTicksPerSecond;
 #endif
 
 #endif //FIREGL_USWC_SUPPORT
-
+#endif /*ifndef ESX*/
 
 /*****************************************************************************
 *                                                                            *
@@ -662,6 +716,7 @@ typedef unsigned int (*KAS_IhRoutine_t)(void* pIhContext);
 #define KAS_RETCODE_TIMEOUT         2
 #define KAS_RETCODE_SIGNAL          3
 
+#ifndef ESX 
 /** \brief Interface functions */
 extern unsigned int  ATI_API_CALL KAS_Initialize(KAS_Initialize_t* pinit);
 extern unsigned int  ATI_API_CALL KAS_Ih_Execute(KAS_IhRoutine_t ih_routine,
@@ -805,7 +860,6 @@ extern int ATI_API_CALL firegl_asyncio_fasync(int fd,
                                               KCL_IO_FILE_Handle filp,
                                               int mode);
 
-
 extern void *ATI_API_CALL KCL_lock_init(void);
 extern void ATI_API_CALL KCL_lock_deinit(void *plock);
 extern void ATI_API_CALL KCL_spin_lock(void *lock);
@@ -814,6 +868,12 @@ extern void ATI_API_CALL KCL_get_random_bytes(void *buf, int nbytes);
 extern void* ATI_API_CALL KCL_get_pubdev(void);
 extern void  ATI_API_CALL KCL_fpu_begin(void);
 extern void  ATI_API_CALL KCL_fpu_end(void);
+extern void* ATI_API_CALL KCL_create_proc_dir(void *root_dir, const char *name,
+  unsigned int access);
+extern void ATI_API_CALL KCL_remove_proc_dir_entry(void *root, const char *name);
+extern void* ATI_API_CALL KCL_create_proc_entry(void *root_dir, const char *name,
+  unsigned int access_mode, kcl_file_operations_t* fops,
+  void *read_fn, void* write_fn, void *private_data);
 
 //The length of uuid, standardized by the Open Software Foundation, is 16.
 //In kernel, hard coded in function generate_random_uuid(). 
@@ -846,6 +906,10 @@ extern int ATI_API_CALL libip_suspend(struct drm_device* dev, int state);
 
 //libip call back entry when resume. return 0 if success . 
 extern int ATI_API_CALL libip_resume(struct drm_device* dev);
+#endif /*ifndef ESX*/
 
+#ifdef ESX
+#include "kcl_esx.h"
+#endif
 
 #endif /* _FIREGL_PUBLIC_H_ */

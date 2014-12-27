@@ -138,6 +138,10 @@
 #ifdef CONFIG_MTRR
 #include <asm/mtrr.h>
 #endif
+#ifdef CONFIG_EFI
+#include <linux/efi.h>
+#endif
+#include <linux/screen_info.h>
 #include <asm/delay.h>
 #include <linux/agp_backend.h>
 
@@ -222,6 +226,11 @@
 #define preempt_enable()
 #endif
 
+// VM_RESERVED is removed from 3.7.0
+#ifndef VM_RESERVED
+#define VM_RESERVED             VM_DONTEXPAND | VM_DONTDUMP
+#endif
+
 // ============================================================
 /* globals */
 
@@ -250,7 +259,11 @@ module_param(firegl, charp, 0);
 #endif
 
 #ifdef MODULE_LICENSE
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,19,0)
+MODULE_LICENSE("GPL\0Proprietary. (C) 2002 - ATI Technologies, Starnberg, GERMANY");
+#else
 MODULE_LICENSE("Proprietary. (C) 2002 - ATI Technologies, Starnberg, GERMANY");
+#endif
 #endif
 #ifdef MODULE_DEVICE_TABLE
 MODULE_DEVICE_TABLE(pci, fglrx_pci_table);
@@ -495,12 +508,38 @@ static firegl_drm_stub_info_t firegl_stub_info;
 
 static char *kcl_pte_phys_addr_str(pte_t pte, char *buf, kcl_dma_addr_t* phys_address);
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3,10,0)
+
 #define READ_PROC_WRAP(func)                                            \
-static int func##_wrap(char *buf, char **start, kcl_off_t offset,      \
+static int func##_wrap(char *buf, char **start, kcl_off_t offset,       \
                        int len, int* eof, void* data)                   \
 {                                                                       \
-    return func(buf, start, offset, len, eof, data);                    \
+    if(offset > 0) {                                                    \
+        KCL_DEBUG1(FN_FIREGL_PROC,"partial requests not supported!\n"); \
+        return 0; /* no partial requests */                             \
+    }                                                                   \
+    *start = buf;                                                       \
+    *eof = 1;                                                           \
+    return func(buf, len, data);                                        \
 }
+
+#else
+
+#define READ_PROC_WRAP(func)                                            \
+static int func##_wrap(struct seq_file *m, void* data)                  \
+{                                                                       \
+    int len = 0;                                                        \
+    len = func(m->buf+m->count, m->size-m->count, m->private);          \
+    if((m->count + len) < m->size) {                                    \
+         m->count += len;                                               \
+         return 0;                                                      \
+    } else {                                                            \
+         m->count = m->size;                                            \
+         return -1;                                                     \
+    }                                                                   \
+}
+
+#endif
 
 READ_PROC_WRAP(drm_name_info)
 READ_PROC_WRAP(drm_mem_info)
@@ -516,9 +555,14 @@ READ_PROC_WRAP(firegl_bios_version)
 READ_PROC_WRAP(firegl_interrupt_info)
 READ_PROC_WRAP(firegl_ptm_info)
 
-static int firegl_debug_proc_write_wrap(void* file, const char *buffer, unsigned long count, void *data)
-{                                                                  
-    return firegl_debug_proc_write(file, buffer, count, data);     
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,10,0)
+static kcl_ssize_t firegl_debug_proc_write_wrap(struct file *file,
+  const char *buffer, kcl_size_t count, kcl_loff_t *data) {
+#else
+static int firegl_debug_proc_write_wrap(void* file,
+  const char *buffer, unsigned long count, void *data) {
+#endif
+    return(firegl_debug_proc_write(file, buffer, count, data));
 }
 
 /** \brief Callback function for reading from /proc/ati/major
@@ -534,14 +578,19 @@ static int firegl_debug_proc_write_wrap(void* file, const char *buffer, unsigned
  *
  * \return number of bytes written
  */
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3,10,0)
 static int firegl_major_proc_read(char *buf, char **start, kcl_off_t offset,
-                                  int request, int* eof, void* data)
-{
+  int request, int* eof, void* data) {
+#else
+static int firegl_major_proc_read(struct seq_file *m, void* data) {
+#endif
+
     int len = 0;    // For ProcFS: fill buf from the beginning
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3,10,0)
     KCL_DEBUG1(FN_FIREGL_PROC, "offset %d\n", (int)offset);
 
-    if (offset > 0) 
+    if (offset > 0)
     {
         KCL_DEBUG1(FN_FIREGL_PROC, "no partial requests\n");
         return 0; /* no partial requests */
@@ -551,28 +600,191 @@ static int firegl_major_proc_read(char *buf, char **start, kcl_off_t offset,
     *eof = 1;
 
     len = snprintf(buf, request, "%d\n", major);
+#else
+    len = seq_printf(m, "%d\n", major);
+#endif
 
     KCL_DEBUG1(FN_FIREGL_PROC, "return len=%i\n",len);
 
     return len;
 }
 
-kcl_proc_list_t KCL_PROC_FileList[] = 
-{
-    { "name",           drm_name_info_wrap,         NULL},
-    { "mem",            drm_mem_info_wrap,          NULL},
-    { "mem1",           drm_mem_info1_wrap,         NULL},
-    { "vm",             drm_vm_info_wrap,           NULL},
-    { "clients",        drm_clients_info_wrap,      NULL},
-    { "lock",           firegl_lock_info_wrap,      NULL},
-#ifdef DEBUG
-    { "bq_info",        drm_bq_info_wrap,           NULL},
-#endif
-    { "biosversion",    firegl_bios_version_wrap,   NULL},
-    { "interrupt_info", firegl_interrupt_info_wrap, NULL},
-    { "ptm_info",       firegl_ptm_info_wrap,       NULL},
-    { "NULL",           NULL,                       NULL} // Terminate List!!!
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,10,0)
+static int firegl_major_proc_open(struct inode *inode, struct file *file) {
+    return(single_open(file, firegl_major_proc_read, PDE_DATA(inode)));
+}
+
+static const struct file_operations firegl_major_fops = {
+    .open = firegl_major_proc_open,
+    .read = seq_read,
+    .llseek = seq_lseek,
 };
+
+static int firegl_debug_proc_open(struct inode *inode, struct file *file) {
+    return(single_open(file, firegl_debug_proc_read_wrap, PDE_DATA(inode)));
+}
+
+static const struct file_operations firegl_debug_fops = {
+    .open = firegl_debug_proc_open,
+    .write = firegl_debug_proc_write_wrap,
+    .read = seq_read,
+    .llseek = seq_lseek,
+};
+
+static int firegl_name_proc_open(struct inode *inode, struct file *file) {
+    return(single_open(file, drm_name_info_wrap, PDE_DATA(inode)));
+}
+
+static const struct file_operations firegl_name_fops = {
+    .open = firegl_name_proc_open,
+    .read = seq_read,
+    .llseek = seq_lseek,
+};
+
+static int firegl_mem_proc_open(struct inode *inode, struct file *file) {
+    return(single_open(file, drm_mem_info_wrap, PDE_DATA(inode)));
+}
+
+static const struct file_operations firegl_mem_fops = {
+    .open = firegl_mem_proc_open,
+    .read = seq_read,
+    .llseek = seq_lseek,
+};
+
+static int firegl_mem1_proc_open(struct inode *inode, struct file *file) {
+    return(single_open(file, drm_mem_info1_wrap, PDE_DATA(inode)));
+}
+
+static const struct file_operations firegl_mem1_fops = {
+    .open = firegl_mem1_proc_open,
+    .read = seq_read,
+    .llseek = seq_lseek,
+};
+
+static int firegl_vm_proc_open(struct inode *inode, struct file *file) {
+    return(single_open(file, drm_vm_info_wrap, PDE_DATA(inode)));
+}
+
+static const struct file_operations firegl_vm_fops = {
+    .open = firegl_vm_proc_open,
+    .read = seq_read,
+    .llseek = seq_lseek,
+};
+
+static int firegl_clients_proc_open(struct inode *inode, struct file *file) {
+    return(single_open(file, drm_clients_info_wrap, PDE_DATA(inode)));
+}
+
+static const struct file_operations firegl_clients_fops = {
+    .open = firegl_clients_proc_open,
+    .read = seq_read,
+    .llseek = seq_lseek,
+};
+
+static int firegl_lock_proc_open(struct inode *inode, struct file *file) {
+     return(single_open(file, firegl_lock_info_wrap, PDE_DATA(inode)));
+}
+
+static const struct file_operations firegl_lock_fops = {
+    .open = firegl_lock_proc_open,
+    .read = seq_read,
+    .llseek = seq_lseek,
+};
+
+#ifdef DEBUG
+static int firegl_bq_proc_open(struct inode *inode, struct file *file) {
+    return(single_open(file, drm_bq_info_wrap, PDE_DATA(inode)));
+}
+
+static const struct file_operations firegl_bq_fops = {
+    .open = firegl_bq_proc_open,
+    .read = seq_read,
+    .llseek = seq_lseek,
+};
+#endif
+
+static int firegl_bios_proc_open(struct inode *inode, struct file *file) {
+    return(single_open(file, firegl_bios_version_wrap, PDE_DATA(inode)));
+}
+
+static const struct file_operations firegl_bios_fops = {
+    .open = firegl_bios_proc_open,
+    .read = seq_read,
+    .llseek = seq_lseek,
+};
+
+static int firegl_interrupt_proc_open(struct inode *inode, struct file *file) {
+    return(single_open(file, firegl_interrupt_info_wrap, PDE_DATA(inode)));
+}
+
+static const struct file_operations firegl_interrupt_fops = {
+    .open = firegl_interrupt_proc_open,
+    .read = seq_read,
+    .llseek = seq_lseek,
+};
+
+static int firegl_ptm_proc_open(struct inode *inode, struct file *file) {
+    return(single_open(file, firegl_ptm_info_wrap, PDE_DATA(inode)));
+}
+
+static const struct file_operations firegl_ptm_fops = {
+    .open = firegl_ptm_proc_open,
+    .read = seq_read,
+    .llseek = seq_lseek,
+};
+
+#endif
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3,10,0)
+
+kcl_proc_list_t KCL_PROC_FileList[] = {
+    { "name",           drm_name_info_wrap,         NULL, NULL },
+    { "mem",            drm_mem_info_wrap,          NULL, NULL },
+    { "mem1",           drm_mem_info1_wrap,         NULL, NULL },
+    { "vm",             drm_vm_info_wrap,           NULL, NULL },
+    { "clients",        drm_clients_info_wrap,      NULL, NULL },
+    { "lock",           firegl_lock_info_wrap,      NULL, NULL },
+#ifdef DEBUG
+    { "bq_info",        drm_bq_info_wrap,           NULL, NULL },
+#endif
+    { "biosversion",    firegl_bios_version_wrap,   NULL, NULL },
+    { "interrupt_info", firegl_interrupt_info_wrap, NULL, NULL },
+    { "ptm_info",       firegl_ptm_info_wrap,       NULL, NULL },
+    { "NULL",           NULL,                       NULL, NULL }
+};
+
+kcl_proc_list_t KCL_GLOBAL_PROC_FILELIST[] = {
+    { "major",          firegl_major_proc_read,      NULL, NULL },
+    { "debug",          firegl_debug_proc_read_wrap, firegl_debug_proc_write_wrap, NULL },
+    { "NULL",           NULL,                        NULL, NULL }
+};
+
+#else
+
+kcl_proc_list_t KCL_PROC_FileList[] = {
+    { "name",           NULL,         NULL, (kcl_file_operations_t*) &firegl_name_fops },
+    { "mem",            NULL,         NULL, (kcl_file_operations_t*) &firegl_mem_fops },
+    { "mem1",           NULL,         NULL, (kcl_file_operations_t*) &firegl_mem1_fops },
+    { "vm",             NULL,         NULL, (kcl_file_operations_t*) &firegl_vm_fops },
+    { "clients",        NULL,         NULL, (kcl_file_operations_t*) &firegl_clients_fops },
+    { "lock",           NULL,         NULL, (kcl_file_operations_t*) &firegl_lock_fops },
+#ifdef DEBUG
+    { "bq_info",        NULL,         NULL, (kcl_file_operations_t*) &firegl_bq_fops },
+#endif
+    { "biosversion",    NULL,         NULL, (kcl_file_operations_t*) &firegl_bios_fops },
+    { "interrupt_info", NULL,         NULL, (kcl_file_operations_t*) &firegl_interrupt_fops },
+    { "ptm_info",       NULL,         NULL, (kcl_file_operations_t*) &firegl_ptm_fops },
+    { "NULL",           NULL,         NULL, NULL }
+};
+
+kcl_proc_list_t KCL_GLOBAL_PROC_FILELIST[] =
+{
+    { "major",          NULL,         NULL, (kcl_file_operations_t*) &firegl_major_fops},
+    { "debug",          NULL,         NULL, (kcl_file_operations_t*) &firegl_debug_fops},
+    { "NULL",           NULL,         NULL, NULL}
+};
+
+#endif
 
 static struct proc_dir_entry *firegl_proc_init( device_t *dev,
                                                 int minor,
@@ -583,11 +795,11 @@ static struct proc_dir_entry *firegl_proc_init( device_t *dev,
     struct proc_dir_entry *ent;
     char    name[64];
     kcl_proc_list_t *list = proc_list;
+    kcl_proc_list_t *globallist = &KCL_GLOBAL_PROC_FILELIST[0];
     KCL_DEBUG1(FN_FIREGL_PROC, "minor %d, proc_list 0x%08lx\n", minor, (unsigned long)proc_list);
-    if (!minor)
-    {
-        root = create_proc_entry("ati", S_IFDIR, NULL);
-    }
+
+    if(!minor)
+      root = KCL_create_proc_dir(NULL, "ati", S_IRUGO|S_IXUGO);
 
     if (!root)
     {
@@ -597,76 +809,51 @@ static struct proc_dir_entry *firegl_proc_init( device_t *dev,
 
     if (minor == 0)
     {
-        // Global major debice number entry
-        ent = create_proc_entry("major", S_IFREG|S_IRUGO, root);
-        if (!ent)
-        {
-            remove_proc_entry("ati", NULL);
-            KCL_DEBUG_ERROR("Cannot create /proc/ati/major\n");
-            return NULL;
+        // Global major debice number entry and Global debug entry
+        while(globallist->rp || globallist->fops) {
+            ent = KCL_create_proc_entry(root, globallist->name, S_IFREG|S_IRUGO,
+              globallist->fops, globallist->rp, globallist->wp, dev);
+            if(!ent) {
+                KCL_remove_proc_dir_entry(NULL, "ati");
+                KCL_DEBUG_ERROR("Cannot create /proc/ati/major\n");
+                return(NULL);
+            }
+            globallist++;
         }
-        ent->read_proc = (read_proc_t*)firegl_major_proc_read;
     }
 
     sprintf(name, "%d", minor);
-    *dev_root = create_proc_entry(name, S_IFDIR, root);
+    *dev_root = KCL_create_proc_dir(root, name, S_IRUGO|S_IXUGO);
     if (!*dev_root) {
-        remove_proc_entry("major", root);
-        remove_proc_entry("ati", NULL);
+        KCL_remove_proc_dir_entry(root, "major");
+        KCL_remove_proc_dir_entry(NULL, "ati");
         KCL_DEBUG_ERROR("Cannot create /proc/ati/%s\n", name);
-        return NULL;
+        return(NULL);
     }
 
-    while (list->f || list->fops)
-    {
-        ent = create_proc_entry(list->name, S_IFREG|S_IRUGO, *dev_root);
-        if (!ent)
-        {
+    while(list->rp || list->fops) {
+        ent = KCL_create_proc_entry(*dev_root, list->name, S_IFREG|S_IRUGO,
+          list->fops, list->rp, list->wp,
+          ((dev->pubdev.signature == FGL_DEVICE_SIGNATURE) ? firegl_find_device(minor) : (dev)));
+
+        if(!ent) {
             KCL_DEBUG_ERROR("Cannot create /proc/ati/%s/%s\n", name, list->name);
-            while (proc_list != list)
-            {
-                remove_proc_entry(proc_list->name, *dev_root);
+            while(proc_list != list) {
+                KCL_remove_proc_dir_entry(*dev_root, proc_list->name);
                 proc_list++;
             }
-            remove_proc_entry(name, root);
-            if (!minor)
-            {
-                remove_proc_entry("major", root);
-                remove_proc_entry("ati", NULL);
+            KCL_remove_proc_dir_entry(root, name);
+            if(!minor) {
+                KCL_remove_proc_dir_entry(root, "major");
+                KCL_remove_proc_dir_entry(NULL, "ati");
             }
-            return NULL;
-        }
-
-        if (list->f)
-        {
-            ent->read_proc = (read_proc_t*)list->f;
-        }
-
-        if (list->fops)
-        {
-            ent->proc_fops = (struct file_operations*)list->fops;
-        }
-
-        {
-            ent->data = (dev->pubdev.signature == FGL_DEVICE_SIGNATURE)? firegl_find_device(minor) : (dev);
+            return(NULL);
         }
 
         list++;
     }
 
-    if (minor == 0)
-    {
-        // Global debug entry, only create it once
-        ent = create_proc_entry("debug", S_IFREG|S_IRUGO, root);
-        if (ent) 
-        {
-            ent->read_proc = (read_proc_t*)firegl_debug_proc_read_wrap;     
-            ent->write_proc = (write_proc_t*)firegl_debug_proc_write_wrap;  
-            ent->data = dev;
-        }
-    }
-
-    return root;
+    return(root);
 }
 
 static int firegl_proc_cleanup( int minor,
@@ -681,26 +868,23 @@ static int firegl_proc_cleanup( int minor,
         return 0;
     }
 
-    while (proc_list->f || proc_list->fops)
-    {
+    while(proc_list->rp || proc_list->fops) {
         KCL_DEBUG1(FN_FIREGL_PROC, "proc_list : 0x%x, proc_list->name:%s\n", proc_list, proc_list->name);
-        remove_proc_entry(proc_list->name, dev_root);
+        KCL_remove_proc_dir_entry(dev_root, proc_list->name);
         proc_list++;
     }
 
     sprintf(name, "%d", minor);
 
-    remove_proc_entry(name, root);
+    KCL_remove_proc_dir_entry(root, name);
 
-    if ( minor == (firegl_minors-1) )
-    {
-        remove_proc_entry("major", root);
-        remove_proc_entry("debug", root);
-
-        remove_proc_entry("ati", NULL);
+    if(minor == (firegl_minors - 1)) {
+        KCL_remove_proc_dir_entry(root, "major");
+        KCL_remove_proc_dir_entry(root, "debug");
+        KCL_remove_proc_dir_entry(NULL, "ati");
         KCL_DEBUG1(FN_FIREGL_PROC,"remove /proc/ati. \n");
-    }    
-    return 0;
+    }
+    return(0);
 }
 
 static int firegl_stub_open(struct inode *inode, struct file *filp)
@@ -1043,12 +1227,11 @@ static int __init firegl_init_module(void)
     if ( drm_proclist == NULL )
         return -ENOMEM;
 
-    for ( i=0; i<DRM_PROC_ENTRIES; i++ )
-    {
+    for(i = 0; i < DRM_PROC_ENTRIES; i++) {
         drm_proclist[i].name = DRM(proc_list)[i].name;
-        drm_proclist[i].f = (void *)DRM(proc_list)[i].f;
+        drm_proclist[i].rp = (void *) DRM(proc_list)[i].f;
     }
-    drm_proclist[i].f = NULL; // terminate list
+    drm_proclist[i].rp = NULL; // terminate list
 
     memset(&firegl_stub_list, 0, sizeof(firegl_stub_list_t) * FIREGL_STUB_MAXCARDS);
     memset(&firegl_stub_info, 0, sizeof(firegl_stub_info));
@@ -1533,10 +1716,14 @@ KCL_TYPE_Pid ATI_API_CALL KCL_GetTgid(void)
  */
 KCL_TYPE_Uid ATI_API_CALL KCL_GetEffectiveUid(void)
 {
-#ifdef current_euid
-    return current_euid();
+#ifdef CONFIG_UIDGID_STRICT_TYPE_CHECKS
+    return(__kuid_val(current_euid()));
 #else
-    return current->euid;
+  #ifdef current_euid
+    return(current_euid());
+  #else
+    return(current->euid);
+  #endif
 #endif
 }
 
@@ -1782,6 +1969,33 @@ void ATI_API_CALL KCL_SEMAPHORE_Up(struct semaphore* sem)
 {
     up(sem);
 }
+
+//rw semaphore for GPU reset
+void ATI_API_CALL KCL_RW_SEMAPHORE_DownWrite(struct rw_semaphore* sem)
+{
+    down_write(sem);
+}
+void ATI_API_CALL KCL_RW_SEMAPHORE_UpWrite(struct rw_semaphore* sem)
+{
+    up_write(sem);
+}
+void ATI_API_CALL KCL_RW_SEMAPHORE_DownRead(struct rw_semaphore* sem)
+{
+    down_read(sem);
+}
+void ATI_API_CALL KCL_RW_SEMAPHORE_UpRead(struct rw_semaphore* sem)
+{
+    up_read(sem);
+}
+void ATI_API_CALL KCL_RW_SEMAPHORE_Init(struct rw_semaphore* sem)
+{
+    init_rwsem(sem);
+}
+kcl_size_t ATI_API_CALL KCL_RW_SEMAPHORE_GetObjSize(void)
+{
+    return sizeof(struct rw_semaphore);
+}
+
 
 /** Operations with atomic variables
  * These operations guaranteed to execute atomically on the CPU level
@@ -3045,6 +3259,29 @@ int ATI_API_CALL KCL_MEM_MTRR_DeleteRegion(int reg, unsigned long base, unsigned
 #else /* !CONFIG_MTRR */
     return -EPERM;
 #endif /* !CONFIG_MTRR */
+}
+
+// UEFI specific support
+
+int ATI_API_CALL KCL_EFI_IS_ENABLED(void)
+{
+#ifdef CONFIG_EFI
+#ifdef EFI_BOOT
+    return(efi_enabled(EFI_BOOT));
+#else
+    return(efi_enabled);
+#endif
+    return 0;
+#endif
+}
+
+void ATI_API_CALL KCL_Get_Console_Mode(kcl_console_mode_info_t *pMode)
+{
+    pMode->mode_width = screen_info.lfb_width;
+    pMode->mode_height  = screen_info.lfb_height;
+    pMode->depth  = screen_info.lfb_depth;
+    pMode->pitch  = (screen_info.lfb_linelength)>>2;
+    pMode->fb_base = (unsigned long)screen_info.lfb_base;
 }
 
 /*****************************************************************************/
@@ -4446,14 +4683,18 @@ unsigned int ATI_API_CALL KAS_Initialize(KAS_Initialize_t* pinit)
  * \return Previous value of the execution level for the current processor
  *
  */
-static unsigned long kasSetExecutionLevel(unsigned long level)
-{
+static unsigned long kasSetExecutionLevel(unsigned long level) {
     unsigned long orig_level;
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,19,0)
+    orig_level = __this_cpu_read(kasExecutionLevel);
+    __this_cpu_write(kasExecutionLevel,level);
+#else
     orig_level = __get_cpu_var(kasExecutionLevel);
     __get_cpu_var(kasExecutionLevel) = level;
+#endif
 
-    return orig_level;
+    return(orig_level);
 }
 
 /** \brief Internal helper to get execution level for the current processor
@@ -4461,9 +4702,12 @@ static unsigned long kasSetExecutionLevel(unsigned long level)
  * \return Execution level for the current processor
  *
  */
-static unsigned long kas_GetExecutionLevel(void)
-{
+static unsigned long kas_GetExecutionLevel(void) {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,19,0)
+    return __this_cpu_read(kasExecutionLevel);
+#else
     return __get_cpu_var(kasExecutionLevel);
+#endif
 }
 
 /** \brief Type definition for kas_spin_lock() parameter */
@@ -6073,6 +6317,83 @@ void ATI_API_CALL KCL_fpu_begin(void)
 void ATI_API_CALL KCL_fpu_end(void)
 {
     kernel_fpu_end();
+}
+
+/** Create new directory entry under "/proc/...."
+ * Where
+ * root_dir - Root directory. If NULL then we should use system default root "/proc".
+ * name    - Pointer to the name of directory
+ * access  - Access attribute. We could use it to disable access to the directory for everybody accept owner.
+ *                By default owner is root.
+ * Return NULL if failure. Pointer to proc_dir_entry otherwise
+ */
+void * ATI_API_CALL KCL_create_proc_dir(void *root_dir, const char *name, unsigned int access) {
+    struct proc_dir_entry *dir = NULL;
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3,10,0)
+    if(root_dir == NULL)
+      dir = create_proc_entry(name, S_IFDIR | access, NULL);
+    else
+      dir = create_proc_entry(name, S_IFDIR | access, (struct proc_dir_entry *) root_dir);
+#else
+    if(root_dir == NULL)
+      dir = proc_mkdir_mode(name, S_IFDIR | access, NULL);
+    else
+      dir = proc_mkdir_mode(name, S_IFDIR | access, (struct proc_dir_entry *) root_dir);
+#endif
+    return(dir);
+}
+
+/* Remove proc directory entry
+ * root   - Pointer to directory proc entry or NULL if for system default root "/proc"
+ * name - Name to delete
+ */
+void ATI_API_CALL KCL_remove_proc_dir_entry(void *root, const char *name) {
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3,10,0)
+    if(root == NULL)
+      remove_proc_entry(name, NULL);
+    else
+      remove_proc_entry(name, (struct proc_dir_entry *) root);
+#else
+    if(root == NULL)
+      remove_proc_subtree(name, NULL);
+    else
+      remove_proc_subtree(name, (struct proc_dir_entry *)root);
+#endif
+}
+
+/* Create proc_entry under "root_dir"
+ * read_fn - Function which will be called on read request
+ * write_fn - Function which will be called on write request
+ * private_data - Pointer to private data which will be passed
+ */
+void * ATI_API_CALL KCL_create_proc_entry(void *root_dir, const char *name,
+  unsigned int access_mode, kcl_file_operations_t* fops,
+  void *read_fn, void *write_fn, void *private_data) {
+    struct proc_dir_entry *ent = NULL;
+
+    if((root_dir == NULL) || (name == NULL))
+      return(NULL);
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3,10,0)
+    ent = create_proc_entry(name, access_mode, (struct proc_dir_entry *)root_dir);
+
+    if(ent) {
+        if(read_fn)
+          ent->read_proc = (read_proc_t *)read_fn;    
+        if(write_fn)
+          ent->write_proc = (write_proc_t *)write_fn;
+        if(fops)
+          ent->proc_fops = (struct file_operations*)fops;
+        ent->data = private_data;
+    }
+#else
+    if(fops)
+      ent = proc_create_data(name, access_mode, (struct proc_dir_entry *) root_dir,
+        (struct file_operations*) fops, private_data);
+#endif
+    return(ent);
 }
 
 #endif /* __KERNEL__ */
